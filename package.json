@@ -1,0 +1,24 @@
+{
+	"name": "bettygo",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"test": "vitest",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"@cloudflare/workers-types": "^4.20260515.1",
+		"typescript": "^5.5.2",
+		"vitest": "~3.2.0",
+		"wrangler": "^3.101.0"
+	},
+	"dependencies": {
+		"@discordjs/rest": "^2.6.1",
+		"discord-api-types": "^0.38.47",
+		"hono": "^4.12.18"
+	}
+}
