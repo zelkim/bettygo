@@ -21,7 +21,9 @@ A Cloudflare Workers microservice that handles Discord OAuth2 verification for a
 - **Runtime**: [Cloudflare Workers](https://developers.cloudflare.com/workers/)
 - **Framework**: [Hono](https://hono.dev/)
 - **Storage**: [Cloudflare KV](https://developers.cloudflare.com/kv/) — persists Discord connections by webapp user ID
-- **Discord**: [`@discordjs/rest`](https://github.com/discordjs/discord.js/tree/main/packages/rest) + [`discord-api-types`](https://github.com/discordjs/discord-api-types)
+- **Discord**: native `fetch()` + [`discord-api-types`](https://github.com/discordjs/discord-api-types) for types
+
+> **Note:** bettygo uses native `fetch()` for all Discord API calls instead of `@discordjs/rest`. That package pulls in Node.js-specific dependencies (`node-inspect-extracted`) that break in the CF Workers runtime at startup. The Discord REST API is plain HTTP — no SDK needed.
 
 ---
 
@@ -44,9 +46,29 @@ src/
 
 ---
 
+## The two redirect URIs — read this first
+
+This is the most common point of confusion when setting up bettygo. There are **two** redirect URIs and they point to completely different places.
+
+```
+User → Discord → bettygo/auth/callback → yourapp.com/discord-callback
+                        ↑                          ↑
+              DISCORD_REDIRECT_URI          WEBAPP_REDIRECT_URI
+          (registered in Discord portal)    (your frontend page)
+```
+
+| Variable | Points to | Registered where |
+|---|---|---|
+| `DISCORD_REDIRECT_URI` | bettygo's `/auth/callback` endpoint | Discord Developer Portal → OAuth2 → Redirects |
+| `WEBAPP_REDIRECT_URI` | Your frontend's callback page | Nowhere — bettygo uses it internally |
+
+**Common mistake:** registering `https://yourapp.com/discord-callback` (the webapp URL) in the Discord Developer Portal. Discord never redirects there — only bettygo does. What Discord needs registered is the **worker URL**: `https://bg.zel.kim/auth/callback`.
+
+---
+
 ## Environment variables
 
-Set plain vars in `wrangler.jsonc`. Set secrets with `wrangler secret put <NAME>`.
+Plain vars live in `wrangler.jsonc`. Secrets are set with `wrangler secret put` (or `npm run secrets:push` — see Setup).
 
 | Variable | Kind | Description |
 |----------|------|-------------|
@@ -54,11 +76,11 @@ Set plain vars in `wrangler.jsonc`. Set secrets with `wrangler secret put <NAME>
 | `DISCORD_CLIENT_SECRET` | secret | OAuth2 application client secret |
 | `DISCORD_BOT_TOKEN` | secret | Bot token used to check guild membership server-side |
 | `DISCORD_GUILD_ID` | var | ID of the Discord guild to check membership against |
-| `DISCORD_REDIRECT_URI` | var | Full URL of `/auth/callback` on this worker (must match Discord app settings) |
-| `WEBAPP_REDIRECT_URI` | var | URL on the webapp where bettygo redirects the browser after OAuth (e.g. `https://yourapp.com/discord-callback`) |
-| `HMAC_SECRET` | secret | Random string used to sign CSRF state tokens |
+| `DISCORD_REDIRECT_URI` | var | Full URL of `/auth/callback` **on this worker** — must exactly match what is registered in the Discord Developer Portal |
+| `WEBAPP_REDIRECT_URI` | var | Comma-separated list of allowed webapp callback URLs. bettygo redirects the browser here after OAuth (e.g. `https://yourapp.com/discord-callback,http://localhost:3000/discord-callback`) |
+| `HMAC_SECRET` | secret | Random string used to sign CSRF state tokens. Generate with `openssl rand -hex 32` |
 | `API_SECRET` | secret | Shared secret the webapp sends as `X-Api-Key` on protected endpoints |
-| `ALLOWED_ORIGIN` | var | Webapp origin for CORS (e.g. `https://yourapp.com`). Defaults to `*` if empty |
+| `ALLOWED_ORIGIN` | var | Comma-separated list of webapp origins for CORS (e.g. `https://yourapp.com,http://localhost:3000`). Defaults to `*` if empty |
 | `DISCORD_KV` | KV binding | KV namespace for storing Discord connections (configure in `wrangler.jsonc`) |
 
 ---
@@ -67,7 +89,7 @@ Set plain vars in `wrangler.jsonc`. Set secrets with `wrangler secret put <NAME>
 
 ### Authentication
 
-Protected endpoints require the header:
+Protected endpoints require:
 ```
 X-Api-Key: <API_SECRET>
 ```
@@ -88,7 +110,7 @@ Liveness check. No auth required.
 
 ---
 
-### `GET /auth/login?user_id=<id>`
+### `GET /auth/login?user_id=<id>[&redirect_uri=<uri>]`
 
 **Protected.** Returns the Discord OAuth2 authorization URL for the given webapp user. The webapp backend calls this, then redirects the user's browser to the returned URL.
 
@@ -96,7 +118,8 @@ Liveness check. No auth required.
 
 | Param | Required | Description |
 |-------|----------|-------------|
-| `user_id` | yes | The webapp's internal user ID. This is embedded in the OAuth state so bettygo can tie the Discord identity back to this user after the callback. |
+| `user_id` | yes | The webapp's internal user ID. Embedded in the OAuth state so bettygo can tie the Discord identity back to this user after the callback. |
+| `redirect_uri` | no | Which webapp callback URL to redirect to after OAuth. Must be one of the values in `WEBAPP_REDIRECT_URI`. Defaults to the first entry. Use this to send localhost traffic to `http://localhost:3000/discord-callback` while production traffic goes to `https://yourapp.com/discord-callback`. |
 
 **Headers**
 ```
@@ -115,6 +138,7 @@ X-Api-Key: <API_SECRET>
 | Status | Body | Cause |
 |--------|------|-------|
 | 400 | `{ "error": "Missing user_id" }` | `user_id` query param not provided |
+| 400 | `{ "error": "Invalid redirect_uri" }` | `redirect_uri` not in the allowed list |
 | 401 | `{ "error": "Unauthorized" }` | Missing or wrong `X-Api-Key` |
 
 ---
@@ -122,12 +146,12 @@ X-Api-Key: <API_SECRET>
 ### `GET /auth/callback?code=<code>&state=<state>`
 
 **Public.** Discord redirects the user's browser here after authorization. This endpoint:
-1. Verifies the HMAC state and extracts the webapp `user_id`
+1. Verifies the HMAC state and extracts the webapp `user_id` and `redirect_uri`
 2. Exchanges the code for a Discord access token
 3. Fetches the Discord user profile
 4. Checks if the user is a member of `DISCORD_GUILD_ID`
 5. Stores the connection in KV
-6. Redirects the browser to `WEBAPP_REDIRECT_URI`
+6. Redirects the browser to the appropriate `WEBAPP_REDIRECT_URI`
 
 **Do not call this from your backend** — it is a browser redirect target.
 
@@ -162,7 +186,7 @@ X-Api-Key: <API_SECRET>
 X-Api-Key: <API_SECRET>
 ```
 
-**Success response — 200 (connected)**
+**Response — 200 (connected)**
 ```json
 {
   "connected": true,
@@ -176,6 +200,7 @@ X-Api-Key: <API_SECRET>
 
 `avatar` is `null` if the user has no Discord avatar.
 `verified` is `false` if the user authenticated but is not in the configured guild.
+`verified` reflects guild membership **at the time of OAuth** — it is not rechecked on subsequent reads.
 
 **Response — 200 (not connected)**
 ```json
@@ -192,7 +217,7 @@ X-Api-Key: <API_SECRET>
 
 ### `DELETE /users/:userId/discord`
 
-**Protected.** Removes the stored Discord connection for a webapp user (disconnect).
+**Protected.** Removes the stored Discord connection for a webapp user.
 
 **Headers**
 ```
@@ -203,6 +228,8 @@ X-Api-Key: <API_SECRET>
 ```json
 { "ok": true }
 ```
+
+Always returns `200` even if the user had no connection.
 
 **Error responses**
 
@@ -225,8 +252,6 @@ Discord connections are stored at key `discord:{webapp_user_id}`.
   "connected_at": "ISO 8601 timestamp"
 }
 ```
-
-`verified` reflects guild membership at the time of connection. It does not update automatically — if you need live membership status, re-initiate the OAuth flow or add a separate check endpoint.
 
 ---
 
@@ -254,110 +279,91 @@ Webapp redirects user's browser to Discord URL
                                 KV.put("discord:abc", { discord_id, verified, ... })
                                 302 ──► WEBAPP_REDIRECT_URI?user_id=abc&verified=true
 
-User's browser lands on webapp page
-Webapp frontend reads query params, calls webapp backend
+User's browser lands on webapp callback page
+Webapp frontend reads query params, notifies backend
 
 Webapp backend                  bettygo
 ─────────────                   ───────
 GET /users/abc/discord ──►
                         ◄── { connected: true, verified: true, discord_id, username, avatar, connected_at }
 
-Webapp backend sets user.discord_verified = true in its own DB
+Webapp backend updates its own DB: discord_verified = true
 ```
 
 ---
 
 ## Webapp integration walkthrough
 
-Follow these steps to integrate bettygo into your webapp. All steps that say "webapp backend" mean server-side code making HTTP requests to bettygo. Never call protected endpoints from the browser.
+All steps labelled "webapp backend" are server-side. Never call protected endpoints from the browser — `API_SECRET` must stay server-side only.
 
 ### Step 1 — Initiate the Discord connect flow
 
-When the user clicks "Connect Discord" (on the dashboard or during onboarding), your **webapp backend** calls:
+When the user clicks "Connect Discord", your **webapp backend** calls:
 
-```
-GET https://<bettygo-url>/auth/login?user_id=<webapp_user_id>
-X-Api-Key: <API_SECRET>
-```
-
-Parse the response and redirect the user's browser to the returned URL:
-
-```json
-{ "url": "https://discord.com/oauth2/authorize?..." }
-```
-
-Example (Node.js / fetch):
 ```js
-const res = await fetch(`https://<bettygo-url>/auth/login?user_id=${user.id}`, {
-  headers: { "X-Api-Key": process.env.BETTYGO_API_SECRET },
-});
+const res = await fetch(
+  `https://bg.zel.kim/auth/login?user_id=${user.id}&redirect_uri=${encodeURIComponent(callbackUrl)}`,
+  { headers: { "X-Api-Key": process.env.BETTYGO_API_SECRET } }
+);
 const { url } = await res.json();
 // redirect user's browser to `url`
 ```
 
-### Step 2 — Handle the callback redirect (frontend)
+`callbackUrl` should be whichever frontend page will handle the result — e.g. `http://localhost:3000/discord-callback` in dev or `https://yourapp.com/discord-callback` in production. It must be in the `WEBAPP_REDIRECT_URI` list.
 
-After Discord authorization, bettygo redirects the user's browser to `WEBAPP_REDIRECT_URI` with query params:
+### Step 2 — Handle the callback page (frontend)
 
-```
-https://yourapp.com/discord-callback?user_id=abc&verified=true
-https://yourapp.com/discord-callback?user_id=abc&verified=false
-https://yourapp.com/discord-callback?error=oauth_denied
-```
+bettygo redirects the user's browser to your callback page with query params:
 
-On your `/discord-callback` page:
-- If `error` is present, show an error message and optionally let the user retry
-- If `verified=true`, show success and notify the backend
-- If `verified=false`, tell the user they need to join the guild first
+```ts
+const params = new URLSearchParams(window.location.search);
 
-### Step 3 — Confirm and store the result (webapp backend)
-
-After the callback, your **webapp backend** calls bettygo to get the full connection data and update your own database:
-
-```
-GET https://<bettygo-url>/users/<webapp_user_id>/discord
-X-Api-Key: <API_SECRET>
-```
-
-```json
-{
-  "connected": true,
-  "discord_id": "123456789012345678",
-  "username": "zel",
-  "avatar": "https://cdn.discordapp.com/avatars/...",
-  "verified": true,
-  "connected_at": "2024-01-15T12:00:00.000Z"
+if (params.has("error")) {
+  const error = params.get("error"); // e.g. "oauth_denied"
+  // show error state, let user retry
+} else {
+  const userId = params.get("user_id");
+  const verified = params.get("verified") === "true";
+  // notify your backend, show success or "join the guild" message
 }
 ```
 
-Use this to update your user record: set `discord_verified = true`, store `discord_id`, etc.
+### Step 3 — Confirm and store the result (webapp backend)
+
+```js
+const res = await fetch(`https://bg.zel.kim/users/${userId}/discord`, {
+  headers: { "X-Api-Key": process.env.BETTYGO_API_SECRET },
+});
+const data = await res.json();
+// { connected: true, verified: true, discord_id, username, avatar, connected_at }
+// update your own database with this data
+```
 
 ### Step 4 — Disconnect Discord (optional)
 
-To disconnect a user's Discord account:
-
+```js
+await fetch(`https://bg.zel.kim/users/${userId}/discord`, {
+  method: "DELETE",
+  headers: { "X-Api-Key": process.env.BETTYGO_API_SECRET },
+});
+// then update your own DB
 ```
-DELETE https://<bettygo-url>/users/<webapp_user_id>/discord
-X-Api-Key: <API_SECRET>
-```
-
-```json
-{ "ok": true }
-```
-
-Then update your own DB accordingly.
 
 ---
 
 ## Setup
 
-### 1. Discord application
+### 1. Discord Developer Portal
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create a new application
-2. Under **OAuth2 → Redirects**, add: `https://<bettygo-url>/auth/callback`
+2. Under **OAuth2 → Redirects**, add the worker's callback URL — **not your webapp URL**:
+   - Production: `https://bg.zel.kim/auth/callback`
+   - Local dev: `http://localhost:8787/auth/callback`
 3. Copy the **Client ID** and **Client Secret**
 4. Under **Bot**, create a bot and copy the **Bot Token**
 5. Invite the bot to your guild with the `bot` scope (no special permissions needed — it only reads member data)
+
+> **Critical:** The URL you register in the Discord portal must exactly match `DISCORD_REDIRECT_URI` in your config. A mismatch causes Discord to return `Invalid OAuth2 redirect_uri` immediately after the user authorizes.
 
 ### 2. Create a KV namespace
 
@@ -379,34 +385,86 @@ Copy the returned `id` into `wrangler.jsonc`:
 "vars": {
   "DISCORD_CLIENT_ID": "your_client_id",
   "DISCORD_GUILD_ID": "your_guild_id",
-  "DISCORD_REDIRECT_URI": "https://<bettygo-url>/auth/callback",
-  "WEBAPP_REDIRECT_URI": "https://yourapp.com/discord-callback",
-  "ALLOWED_ORIGIN": "https://yourapp.com"
+  "DISCORD_REDIRECT_URI": "https://bg.zel.kim/auth/callback",
+  "WEBAPP_REDIRECT_URI": "https://yourapp.com/discord-callback,http://localhost:3000/discord-callback",
+  "ALLOWED_ORIGIN": "https://yourapp.com,http://localhost:3000"
 }
 ```
 
 ### 4. Set secrets
 
+Copy `.dev.vars.example` to `.dev.vars` and fill in values for local dev:
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+For production, push secrets to Cloudflare with the helper script:
+
+```bash
+npm run secrets:push
+```
+
+This reads `DISCORD_CLIENT_SECRET`, `DISCORD_BOT_TOKEN`, `HMAC_SECRET`, and `API_SECRET` from `.env` and uploads each with `wrangler secret put`. You can also target a different file:
+
+```bash
+npm run secrets:push -- .env.production
+```
+
+Or push manually:
+
 ```bash
 npx wrangler secret put DISCORD_CLIENT_SECRET
 npx wrangler secret put DISCORD_BOT_TOKEN
-npx wrangler secret put HMAC_SECRET    # any long random string
+npx wrangler secret put HMAC_SECRET    # generate: openssl rand -hex 32
 npx wrangler secret put API_SECRET     # share this with your webapp backend
 ```
 
-### 5. Deploy
+### 5. Local dev
+
+For local development, wrangler reads secrets from `.dev.vars` (gitignored) automatically. Set `DISCORD_REDIRECT_URI` in `.env` / `.dev.vars` to the local worker URL:
+
+```
+DISCORD_REDIRECT_URI=http://localhost:8787/auth/callback
+```
+
+And make sure `http://localhost:8787/auth/callback` is registered in the Discord Developer Portal (in addition to the production URL).
 
 ```bash
-npm run dev      # local dev at http://localhost:8787
-npm run deploy   # deploy to Cloudflare Workers
-npm run test     # run tests with Vitest
+npm run dev    # starts worker at http://localhost:8787
 ```
+
+### 6. Deploy
+
+```bash
+npm run deploy
+```
+
+---
+
+## Common pitfalls
+
+**`Invalid OAuth2 redirect_uri` from Discord**
+The `redirect_uri` in the OAuth request doesn't match any URL registered in the Discord Developer Portal. Check that `DISCORD_REDIRECT_URI` (the worker URL, e.g. `https://bg.zel.kim/auth/callback`) is registered — not the webapp URL. For local dev, `http://localhost:8787/auth/callback` must also be registered.
+
+**Worker crashes at startup with `Super expression must either be null or a function`**
+A dependency is importing Node.js-specific classes that don't exist in the CF Workers runtime. bettygo uses native `fetch()` instead of `@discordjs/rest` specifically to avoid this. If you add new npm packages, check they are CF Workers compatible — avoid anything that extends Node.js built-ins (`EventEmitter`, `stream`, etc.).
+
+**OAuth state expired (`invalid_state` error)**
+The HMAC state is valid for 10 minutes. If the user takes longer than that on the Discord authorization page, the callback will fail. Redirect the user back to the login flow.
+
+**CORS errors in the browser**
+The request origin is not in `ALLOWED_ORIGIN`. Add the missing origin to the comma-separated list in `wrangler.jsonc` and redeploy. Remember that `ALLOWED_ORIGIN` controls which origins can call bettygo's API from the browser — for server-to-server calls from your backend, CORS doesn't apply.
+
+**`verified: false` unexpectedly**
+The user completed OAuth but is not a member of `DISCORD_GUILD_ID`. `verified` reflects membership at the time of connection — it doesn't update automatically. If you need live membership status, re-initiate the OAuth flow.
 
 ---
 
 ## Security notes
 
-- **CSRF protection**: the OAuth `state` is an HMAC-SHA256 token over `timestamp.userId`. It expires after 10 minutes and requires knowledge of `HMAC_SECRET` to forge — no KV or database needed for state storage.
-- **API key**: protected endpoints require `X-Api-Key` matching `API_SECRET`. Keep this secret server-side only — never expose it to the browser.
-- **Guild membership**: checked server-side using the bot token, so users cannot spoof membership by manipulating client-side state.
-- **Secrets**: `DISCORD_CLIENT_SECRET`, `DISCORD_BOT_TOKEN`, `HMAC_SECRET`, and `API_SECRET` are never exposed to the browser.
+- **CSRF protection**: the OAuth `state` is HMAC-SHA256 signed over `timestamp.userId`. It expires after 10 minutes and requires knowledge of `HMAC_SECRET` to forge — no database or KV needed for state storage.
+- **API key**: protected endpoints require `X-Api-Key` matching `API_SECRET`. This must only be used server-side — never expose it to the browser.
+- **Guild membership**: checked server-side using the bot token. Users cannot spoof membership by manipulating client-side state.
+- **Redirect URI validation**: the optional `redirect_uri` param on `/auth/login` is validated against the `WEBAPP_REDIRECT_URI` allowlist before being encoded in the signed state. An arbitrary redirect URI cannot be injected.
+- **Secrets**: `DISCORD_CLIENT_SECRET`, `DISCORD_BOT_TOKEN`, `HMAC_SECRET`, and `API_SECRET` are set via `wrangler secret put` and are never in source control or `wrangler.jsonc`.
