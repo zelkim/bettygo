@@ -8,9 +8,11 @@ import type { Env } from "./types";
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", async (c, next) => {
-  const origin = c.env.ALLOWED_ORIGIN || "*";
+  const origins = c.env.ALLOWED_ORIGIN
+    ? c.env.ALLOWED_ORIGIN.split(",").map((o) => o.trim())
+    : ["*"];
   return cors({
-    origin,
+    origin: origins,
     allowMethods: ["GET", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "X-Api-Key"],
   })(c, next);

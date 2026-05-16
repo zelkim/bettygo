@@ -1,10 +1,10 @@
-import { REST, DiscordAPIError } from "@discordjs/rest";
-import { Routes } from "discord-api-types/v10";
 import type {
   RESTGetAPICurrentUserResult,
   RESTGetAPIGuildMemberResult,
   RESTPostOAuth2AccessTokenResult,
 } from "discord-api-types/v10";
+
+const DISCORD_API = "https://discord.com/api/v10";
 
 export type DiscordUser = RESTGetAPICurrentUserResult;
 export type GuildMember = RESTGetAPIGuildMemberResult;
@@ -16,9 +16,9 @@ export async function exchangeCode(
   clientSecret: string,
   redirectUri: string,
 ): Promise<TokenResponse> {
-  const rest = new REST({ version: "10" });
-
-  return rest.post(Routes.oauth2TokenExchange(), {
+  const res = await fetch(`${DISCORD_API}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
@@ -26,14 +26,17 @@ export async function exchangeCode(
       code,
       redirect_uri: redirectUri,
     }),
-    passThroughBody: true,
-    auth: false,
-  }) as Promise<TokenResponse>;
+  });
+  if (!res.ok) throw new Error(`token_exchange_failed: ${res.status}`);
+  return res.json() as Promise<TokenResponse>;
 }
 
 export async function getUser(accessToken: string): Promise<DiscordUser> {
-  const rest = new REST({ version: "10", authPrefix: "Bearer" }).setToken(accessToken);
-  return rest.get(Routes.user("@me")) as Promise<DiscordUser>;
+  const res = await fetch(`${DISCORD_API}/users/@me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`user_fetch_failed: ${res.status}`);
+  return res.json() as Promise<DiscordUser>;
 }
 
 export async function isGuildMember(
@@ -41,15 +44,12 @@ export async function isGuildMember(
   guildId: string,
   botToken: string,
 ): Promise<boolean> {
-  const rest = new REST({ version: "10" }).setToken(botToken);
-
-  try {
-    await rest.get(Routes.guildMember(guildId, userId)) as GuildMember;
-    return true;
-  } catch (err: unknown) {
-    if (err instanceof DiscordAPIError && err.status === 404) return false;
-    throw err;
-  }
+  const res = await fetch(`${DISCORD_API}/guilds/${guildId}/members/${userId}`, {
+    headers: { Authorization: `Bot ${botToken}` },
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`guild_check_failed: ${res.status}`);
+  return true;
 }
 
 export function buildAvatarUrl(user: DiscordUser): string | null {

@@ -17,18 +17,43 @@ function bufToHex(buf: ArrayBuffer): string {
     .join("");
 }
 
-// State format: {timestamp}.{userId}.{hmac(timestamp.userId)}
-export async function generateState(secret: string, userId: string): Promise<string> {
+function toBase64Url(s: string): string {
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function fromBase64Url(s: string): string {
+  return atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+}
+
+// State format (no redirect):  {ts}.{userId}.{hmac}
+// State format (with redirect): {ts}.{userId}.{base64url(redirectUri)}.{hmac}
+// base64url contains only [A-Za-z0-9_-], so dots remain safe delimiters.
+export async function generateState(
+  secret: string,
+  userId: string,
+  redirectUri?: string,
+): Promise<string> {
   const ts = Date.now().toString();
-  const payload = `${ts}.${userId}`;
+  const payload = redirectUri
+    ? `${ts}.${userId}.${toBase64Url(redirectUri)}`
+    : `${ts}.${userId}`;
   const key = await importKey(secret);
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
   return `${payload}.${bufToHex(sig)}`;
 }
 
-// Returns the userId encoded in the state, or null if invalid/expired.
-export async function verifyState(state: string, secret: string): Promise<string | null> {
+export interface StatePayload {
+  userId: string;
+  redirectUri: string | null;
+}
+
+// Returns the decoded payload, or null if invalid/expired.
+export async function verifyState(
+  state: string,
+  secret: string,
+): Promise<StatePayload | null> {
   const parts = state.split(".");
+  // Minimum 3 parts: ts, userId, hmac
   if (parts.length < 3) return null;
 
   const sig = parts[parts.length - 1];
@@ -40,9 +65,10 @@ export async function verifyState(state: string, secret: string): Promise<string
 
   const key = await importKey(secret);
   const expected = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-
   if (sig !== bufToHex(expected)) return null;
 
-  // userId is everything between ts and the trailing sig
-  return parts.slice(1, -1).join(".");
+  const userId = parts[1];
+  const redirectUri = parts.length === 4 ? fromBase64Url(parts[2]) : null;
+
+  return { userId, redirectUri };
 }
