@@ -39,6 +39,15 @@ export async function getUser(accessToken: string): Promise<DiscordUser> {
   return res.json() as Promise<DiscordUser>;
 }
 
+export class DiscordAPIError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export async function isGuildMember(
   userId: string,
   guildId: string,
@@ -48,11 +57,6 @@ export async function isGuildMember(
     headers: { Authorization: `Bot ${botToken}` },
   });
   if (res.status === 404) return false;
-  if (!res.ok) throw new Error(`guild_check_failed: ${res.status}`);
+  if (!res.ok) throw new DiscordAPIError(`guild_check_failed: ${res.status}`, res.status);
   return true;
-}
-
-export function buildAvatarUrl(user: DiscordUser): string | null {
-  if (!user.avatar) return null;
-  return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
 }
