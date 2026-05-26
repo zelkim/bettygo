@@ -468,3 +468,7 @@ The user completed OAuth but is not a member of `DISCORD_GUILD_ID`. `verified` r
 - **Guild membership**: checked server-side using the bot token. Users cannot spoof membership by manipulating client-side state.
 - **Redirect URI validation**: the optional `redirect_uri` param on `/auth/login` is validated against the `WEBAPP_REDIRECT_URI` allowlist before being encoded in the signed state. An arbitrary redirect URI cannot be injected.
 - **Secrets**: `DISCORD_CLIENT_SECRET`, `DISCORD_BOT_TOKEN`, `HMAC_SECRET`, and `API_SECRET` are set via `wrangler secret put` and are never in source control or `wrangler.jsonc`.
+
+
+## Contributing
+TBA
