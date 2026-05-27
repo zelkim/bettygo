@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { generateState, verifyState } from "../lib/state";
-import { exchangeCode, getUser, isGuildMember } from "../lib/discord";
+import { exchangeCode, getUser, isGuildMember, buildAvatarUrl } from "../lib/discord";
+import { saveDiscordConnection } from "../lib/kv";
 import type { Env } from "../types";
 
 const auth = new Hono<{ Bindings: Env }>();
@@ -93,10 +94,22 @@ auth.get("/callback", async (c) => {
     return fail("guild_check_failed", redirectBase);
   }
 
+  const avatar = buildAvatarUrl(user);
+  await saveDiscordConnection(c.env.DISCORD_KV, userId, {
+    discord_id: user.id,
+    username: user.username,
+    avatar,
+    verified,
+    connected_at: new Date().toISOString(),
+  });
+
   const params = new URLSearchParams({
     user_id: userId,
     verified: String(verified),
+    discord_id: user.id,
+    username: user.username,
   });
+  if (avatar) params.set("avatar", avatar);
   return c.redirect(`${redirectBase}?${params}`);
 });
 
