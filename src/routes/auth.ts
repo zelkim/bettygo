@@ -93,6 +93,7 @@ auth.get("/callback", async (c) => {
     discord_display_name: user.global_name ?? '',
     discord_avatar: user.avatar ?? '',
   });
+  if (avatar) params.set("avatar", avatar);
   return c.redirect(`${redirectBase}?${params}`);
 });
 
