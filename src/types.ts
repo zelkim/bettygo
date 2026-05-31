@@ -8,5 +8,4 @@ export interface Env {
   HMAC_SECRET: string;
   API_SECRET: string;
   ALLOWED_ORIGIN: string;
-  DISCORD_KV: KVNamespace;
 }

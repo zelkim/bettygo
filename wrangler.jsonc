@@ -16,15 +16,9 @@
   // must be set via: wrangler secret put <NAME>
   "vars": {
     "DISCORD_CLIENT_ID": "1505119307041079346",
-    "DISCORD_GUILD_ID": "1505116970117501070",
+    "DISCORD_GUILD_ID": "1415670958710325270",
     "DISCORD_REDIRECT_URI": "https://bg.zel.kim/auth/callback",
-    "WEBAPP_REDIRECT_URI": "https://better-gov-ph-access-card-development.vercel.app/discord-callback,https://better-gov-ph-access-card.vercel.app/discord-callback,http://localhost:3000/discord-callback",
-    "ALLOWED_ORIGIN": "https://better-gov-ph-access-card.vercel.app,https://better-gov-ph-access-card.vercel.app,http://localhost:3000"
-  },
-  "kv_namespaces": [
-    {
-      "binding": "DISCORD_KV",
-      "id": "0f1b5edb01d24104aa1a3f1706ceb3ea"
-    }
-  ]
+    "WEBAPP_REDIRECT_URI": "https://volunteers.bettergov.ph/discord-callback,https://better-gov-ph-access-card-development.vercel.app/discord-callback,https://better-gov-ph-access-card.vercel.app/discord-callback,http://localhost:3000/discord-callback",
+    "ALLOWED_ORIGIN": "https://volunteers.bettergov.ph,https://better-gov-ph-access-card.vercel.app,https://better-gov-ph-access-card.vercel.app,http://localhost:3000"
+  }
 }

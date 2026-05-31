@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { generateState, verifyState } from "../lib/state";
-import { exchangeCode, getUser, isGuildMember, buildAvatarUrl } from "../lib/discord";
-import { saveDiscordConnection } from "../lib/kv";
+import { exchangeCode, getUser } from "../lib/discord";
 import type { Env } from "../types";
 
 const auth = new Hono<{ Bindings: Env }>();
@@ -45,8 +44,8 @@ auth.get("/login", async (c) => {
 
 // GET /auth/callback?code=<code>&state=<state>
 // Public — called by Discord (user's browser redirect). Validates state,
-// exchanges code, checks guild membership, stores result in KV, then
-// redirects the browser back to WEBAPP_REDIRECT_URI.
+// exchanges code, fetches the Discord user, then redirects to WEBAPP_REDIRECT_URI
+// with ?user_id=<id>&discord_id=<discord_id>.
 auth.get("/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
@@ -87,27 +86,12 @@ auth.get("/callback", async (c) => {
     return fail("user_fetch_failed", redirectBase);
   }
 
-  let verified: boolean;
-  try {
-    verified = await isGuildMember(user.id, c.env.DISCORD_GUILD_ID, c.env.DISCORD_BOT_TOKEN);
-  } catch {
-    return fail("guild_check_failed", redirectBase);
-  }
-
-  const avatar = buildAvatarUrl(user);
-  await saveDiscordConnection(c.env.DISCORD_KV, userId, {
-    discord_id: user.id,
-    username: user.username,
-    avatar,
-    verified,
-    connected_at: new Date().toISOString(),
-  });
-
   const params = new URLSearchParams({
     user_id: userId,
-    verified: String(verified),
     discord_id: user.id,
     discord_username: user.username,
+    discord_display_name: user.global_name ?? '',
+    discord_avatar: user.avatar ?? '',
   });
   if (avatar) params.set("avatar", avatar);
   return c.redirect(`${redirectBase}?${params}`);
